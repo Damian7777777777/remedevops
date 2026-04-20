@@ -1,7 +1,21 @@
 const request = require('supertest');
 const app = require('../index');
+const Database = require('better-sqlite3');
+const path = require('path');
 
 let token = '';
+
+// database.db está en la raíz del proyecto (dos niveles arriba de src/tests/)
+const db = new Database(path.join(__dirname, '../../database.db'));
+
+beforeAll(() => {
+  db.prepare("DELETE FROM users WHERE username = 'testuser'").run();
+});
+
+afterAll(() => {
+  db.prepare("DELETE FROM users WHERE username = 'testuser'").run();
+  db.close();
+});
 
 describe('Auth Routes', () => {
   test('POST /api/auth/register - debe registrar usuario', async () => {
