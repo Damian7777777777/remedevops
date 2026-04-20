@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  app-blue:
+    build: ./proyecto-devops
+    container_name: app-blue
+    environment:
+      - VERSION=blue
+      - PORT=3000
+    ports:
+      - "3001:3000"
+
+  app-green:
+    build: ./proyecto-devops-green
+    container_name: app-green
+    environment:
+      - VERSION=green
+      - PORT=3000
+    ports:
+      - "3002:3000"
+
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - app-blue
+      - app-green
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  grafana-data:
