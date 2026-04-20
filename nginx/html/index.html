@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>TaskFlow</title>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #13131a;
+      --border: #1e1e2e;
+      --accent: #7fffb2;
+      --accent2: #ff6b6b;
+      --text: #e8e8f0;
+      --muted: #6b6b8a;
+      --radius: 2px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Syne', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* GRID BACKGROUND */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(127,255,178,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(127,255,178,0.03) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* SCREENS */
+    .screen { display: none; position: relative; z-index: 1; }
+    .screen.active { display: flex; }
+
+    /* ─── AUTH SCREEN ─── */
+    #auth-screen {
+      min-height: 100vh;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 0;
+    }
+
+    .auth-container {
+      width: 100%;
+      max-width: 420px;
+      padding: 20px;
+    }
+
+    .brand {
+      text-align: center;
+      margin-bottom: 48px;
+      animation: fadeDown 0.6s ease both;
+    }
+
+    .brand h1 {
+      font-size: 3rem;
+      font-weight: 800;
+      letter-spacing: -2px;
+      color: var(--accent);
+      line-height: 1;
+    }
+
+    .brand p {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-top: 8px;
+    }
+
+    .auth-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 40px;
+      animation: fadeUp 0.6s ease 0.2s both;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .auth-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 32px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tab {
+      flex: 1;
+      padding: 12px;
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.75rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: color 0.2s;
+      position: relative;
+    }
+
+    .tab.active {
+      color: var(--accent);
+    }
+
+    .tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px; left: 0; right: 0;
+      height: 2px;
+      background: var(--accent);
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      font-family: 'Space Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.9rem;
+      padding: 12px 16px;
+      outline: none;
+      transition: border-color 0.2s;
+      border-radius: var(--radius);
+    }
+
+    input:focus { border-color: var(--accent); }
+
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      font-family: 'Space Mono', monospace;
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+      border-radius: var(--radius);
+      margin-top: 8px;
+    }
+
+    .btn:hover { opacity: 0.85; }
+    .btn:active { transform: scale(0.98); }
+
+    .btn.danger {
+      background: var(--accent2);
+    }
+
+    .btn.ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+
+    .btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    .error-msg {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--accent2);
+      margin-top: 16px;
+      text-align: center;
+      min-height: 20px;
+    }
+
+    /* ─── DASHBOARD SCREEN ─── */
+    #dashboard-screen {
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 32px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .topbar-brand {
+      font-size: 1.4rem;
+      font-weight: 800;
+      color: var(--accent);
+      letter-spacing: -1px;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .user-badge {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+      letter-spacing: 1px;
+    }
+
+    .health-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      display: inline-block;
+      margin-right: 6px;
+      transition: background 0.3s;
+    }
+
+    .health-dot.ok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+    .health-dot.fail { background: var(--accent2); }
+
+    .logout-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 1px;
+      padding: 6px 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      border-radius: var(--radius);
+    }
+
+    .logout-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+
+    .main-content {
+      flex: 1;
+      padding: 40px 32px;
+      max-width: 900px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 32px;
+    }
+
+    .section-title {
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: -1px;
+    }
+
+    .section-title span {
+      color: var(--accent);
+    }
+
+    /* CREATE TASK FORM */
+    .create-form {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 28px;
+      margin-bottom: 32px;
+      position: relative;
+      overflow: hidden;
+      animation: fadeUp 0.4s ease both;
+    }
+
+    .create-form::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--accent), transparent);
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.85rem;
+      padding: 12px 16px;
+      outline: none;
+      resize: none;
+      height: 80px;
+      transition: border-color 0.2s;
+      border-radius: var(--radius);
+    }
+
+    textarea:focus { border-color: var(--accent); }
+
+    .form-actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .form-actions .btn { width: auto; flex: 1; }
+
+    /* TASKS LIST */
+    .tasks-grid {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .task-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 20px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      transition: border-color 0.2s, transform 0.2s;
+      animation: fadeUp 0.3s ease both;
+      border-radius: var(--radius);
+    }
+
+    .task-card:hover {
+      border-color: var(--accent);
+      transform: translateX(4px);
+    }
+
+    .task-info { flex: 1; }
+
+    .task-title {
+      font-weight: 600;
+      font-size: 1rem;
+      margin-bottom: 4px;
+    }
+
+    .task-desc {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    .task-id {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--border);
+    }
+
+    .task-delete {
+      background: none;
+      border: 1px solid transparent;
+      color: var(--muted);
+      font-size: 1.1rem;
+      cursor: pointer;
+      padding: 6px 10px;
+      transition: all 0.2s;
+      border-radius: var(--radius);
+    }
+
+    .task-delete:hover { border-color: var(--accent2); color: var(--accent2); }
+
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--muted);
+    }
+
+    .empty-state .icon {
+      font-size: 3rem;
+      margin-bottom: 16px;
+      opacity: 0.3;
+    }
+
+    .empty-state p {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.75rem;
+      letter-spacing: 2px;
+    }
+
+    /* STATS BAR */
+    .stats-bar {
+      display: flex;
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 16px 24px;
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .stat::after {
+      content: '';
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      height: 2px;
+      background: var(--accent);
+      transform: scaleX(0);
+      transition: transform 0.3s;
+    }
+
+    .stat:hover::after { transform: scaleX(1); }
+
+    .stat-value {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--accent);
+      line-height: 1;
+    }
+
+    .stat-label {
+      font-family: 'Space Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--muted);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+
+    /* LOADING */
+    .loading {
+      text-align: center;
+      padding: 40px;
+      font-family: 'Space Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 3px;
+    }
+
+    .loading::after {
+      content: '...';
+      animation: dots 1.5s infinite;
+    }
+
+    /* ANIMATIONS */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes fadeDown {
+      from { opacity: 0; transform: translateY(-16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes dots {
+      0%,20%  { content: '.'; }
+      40%,60% { content: '..'; }
+      80%,100%{ content: '...'; }
+    }
+
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.4; }
+    }
+
+    /* TOAST */
+    .toast {
+      position: fixed;
+      bottom: 32px;
+      right: 32px;
+      background: var(--surface);
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.75rem;
+      padding: 12px 20px;
+      letter-spacing: 1px;
+      z-index: 999;
+      transform: translateY(80px);
+      opacity: 0;
+      transition: all 0.3s ease;
+      border-radius: var(--radius);
+    }
+
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.error { border-color: var(--accent2); color: var(--accent2); }
+  </style>
+</head>
+<body>
+
+<!-- ─── AUTH SCREEN ─── -->
+<div id="auth-screen" class="screen active">
+  <div class="auth-container">
+    <div class="brand">
+      <h1>TaskFlow</h1>
+      <p>devops · blue/green deploy</p>
+    </div>
+    <div class="auth-card">
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab('login')">Login</button>
+        <button class="tab" onclick="switchTab('register')">Register</button>
+      </div>
+
+      <!-- LOGIN -->
+      <div id="login-form">
+        <div class="form-group">
+          <label>Usuario</label>
+          <input type="text" id="login-user" placeholder="tu_usuario" autocomplete="off"/>
+        </div>
+        <div class="form-group">
+          <label>Contraseña</label>
+          <input type="password" id="login-pass" placeholder="••••••••"/>
+        </div>
+        <button class="btn" onclick="doLogin()">Entrar →</button>
+        <div class="error-msg" id="login-error"></div>
+      </div>
+
+      <!-- REGISTER -->
+      <div id="register-form" style="display:none">
+        <div class="form-group">
+          <label>Usuario</label>
+          <input type="text" id="reg-user" placeholder="nuevo_usuario" autocomplete="off"/>
+        </div>
+        <div class="form-group">
+          <label>Contraseña</label>
+          <input type="password" id="reg-pass" placeholder="••••••••"/>
+        </div>
+        <button class="btn" onclick="doRegister()">Crear cuenta →</button>
+        <div class="error-msg" id="reg-error"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─── DASHBOARD SCREEN ─── -->
+<div id="dashboard-screen" class="screen">
+  <div class="topbar">
+    <div class="topbar-brand">TaskFlow</div>
+    <div class="topbar-right">
+      <span><span class="health-dot" id="health-dot"></span><span id="health-text" style="font-family:'Space Mono',monospace;font-size:0.65rem;color:var(--muted);letter-spacing:1px;">checking...</span></span>
+      <span class="user-badge" id="user-badge"></span>
+      <button class="logout-btn" onclick="doLogout()">Cerrar sesión</button>
+    </div>
+  </div>
+
+  <div class="main-content">
+    <!-- STATS -->
+    <div class="stats-bar">
+      <div class="stat">
+        <div class="stat-value" id="stat-total">0</div>
+        <div class="stat-label">Tareas totales</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" style="color:var(--accent2)" id="stat-pending">0</div>
+        <div class="stat-label">Pendientes</div>
+      </div>
+    </div>
+
+    <!-- CREATE TASK -->
+    <div class="create-form">
+      <div class="form-row">
+        <div class="form-group" style="margin:0">
+          <label>Título</label>
+          <input type="text" id="task-title" placeholder="Nueva tarea..."/>
+        </div>
+        <div class="form-group" style="margin:0">
+          <label>Descripción</label>
+          <input type="text" id="task-desc" placeholder="Descripción..."/>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button class="btn" onclick="createTask()">+ Crear tarea</button>
+        <button class="btn ghost" onclick="loadTasks()">↻ Recargar</button>
+      </div>
+    </div>
+
+    <!-- SECTION HEADER -->
+    <div class="section-header">
+      <div class="section-title">Mis <span>tareas</span></div>
+    </div>
+
+    <!-- TASKS -->
+    <div class="tasks-grid" id="tasks-list">
+      <div class="loading">cargando</div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ─── CONFIG ───
+  // Cambia esta URL por tu IP de GCP o dominio
+  const API = window.location.hostname === 'localhost'
+    ? 'http://localhost:3000'
+    : '';  // vacío = misma URL (nginx sirve front y proxea la API)
+
+  let token = localStorage.getItem('token') || '';
+  let currentUser = localStorage.getItem('username') || '';
+
+  // ─── INIT ───
+  if (token) showDashboard();
+
+  // ─── TABS ───
+  function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    event.target.classList.add('active');
+    document.getElementById('login-form').style.display = tab === 'login' ? 'block' : 'none';
+    document.getElementById('register-form').style.display = tab === 'register' ? 'block' : 'none';
+  }
+
+  // ─── AUTH ───
+  async function doLogin() {
+    const username = document.getElementById('login-user').value.trim();
+    const password = document.getElementById('login-pass').value;
+    if (!username || !password) return setError('login-error', 'Completa los campos');
+
+    try {
+      const res = await fetch(`${API}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await res.json();
+      if (!res.ok) return setError('login-error', data.error || 'Credenciales incorrectas');
+      token = data.token;
+      currentUser = username;
+      localStorage.setItem('token', token);
+      localStorage.setItem('username', username);
+      showDashboard();
+    } catch (e) {
+      setError('login-error', 'Error de conexión con el servidor');
+    }
+  }
+
+  async function doRegister() {
+    const username = document.getElementById('reg-user').value.trim();
+    const password = document.getElementById('reg-pass').value;
+    if (!username || !password) return setError('reg-error', 'Completa los campos');
+
+    try {
+      const res = await fetch(`${API}/api/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await res.json();
+      if (!res.ok) return setError('reg-error', data.error || 'Error al registrar');
+      toast('✓ Cuenta creada, ahora inicia sesión');
+      switchTab('login');
+      document.querySelectorAll('.tab')[0].classList.add('active');
+      document.querySelectorAll('.tab')[1].classList.remove('active');
+    } catch (e) {
+      setError('reg-error', 'Error de conexión con el servidor');
+    }
+  }
+
+  function doLogout() {
+    token = ''; currentUser = '';
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    showScreen('auth-screen');
+  }
+
+  // ─── DASHBOARD ───
+  function showDashboard() {
+    showScreen('dashboard-screen');
+    document.getElementById('user-badge').textContent = `@${currentUser}`;
+    checkHealth();
+    loadTasks();
+    setInterval(checkHealth, 30000);
+  }
+
+  async function checkHealth() {
+    try {
+      const res = await fetch(`${API}/health`);
+      const data = await res.json();
+      const dot = document.getElementById('health-dot');
+      const txt = document.getElementById('health-text');
+      if (data.status === 'ok') {
+        dot.className = 'health-dot ok';
+        txt.textContent = 'online';
+      } else {
+        dot.className = 'health-dot fail';
+        txt.textContent = 'degraded';
+      }
+    } catch {
+      document.getElementById('health-dot').className = 'health-dot fail';
+      document.getElementById('health-text').textContent = 'offline';
+    }
+  }
+
+  async function loadTasks() {
+    document.getElementById('tasks-list').innerHTML = '<div class="loading">cargando</div>';
+    try {
+      const res = await fetch(`${API}/api/tasks`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.status === 401) return doLogout();
+      const tasks = await res.json();
+      renderTasks(tasks);
+    } catch {
+      document.getElementById('tasks-list').innerHTML = '<div class="empty-state"><div class="icon">⚠</div><p>Error al cargar tareas</p></div>';
+    }
+  }
+
+  function renderTasks(tasks) {
+    const container = document.getElementById('tasks-list');
+    document.getElementById('stat-total').textContent = tasks.length;
+    document.getElementById('stat-pending').textContent = tasks.length;
+
+    if (tasks.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="icon">◻</div>
+          <p>Sin tareas todavía</p>
+        </div>`;
+      return;
+    }
+
+    container.innerHTML = tasks.map((t, i) => `
+      <div class="task-card" style="animation-delay:${i * 0.05}s">
+        <div class="task-info">
+          <div class="task-title">${escHtml(t.title)}</div>
+          ${t.description ? `<div class="task-desc">${escHtml(t.description)}</div>` : ''}
+        </div>
+        <span class="task-id">#${t.id}</span>
+        <button class="task-delete" onclick="deleteTask(${t.id})" title="Eliminar">✕</button>
+      </div>
+    `).join('');
+  }
+
+  async function createTask() {
+    const title = document.getElementById('task-title').value.trim();
+    const description = document.getElementById('task-desc').value.trim();
+    if (!title) return toast('Escribe un título', true);
+
+    try {
+      const res = await fetch(`${API}/api/tasks`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ title, description })
+      });
+      if (!res.ok) return toast('Error al crear tarea', true);
+      document.getElementById('task-title').value = '';
+      document.getElementById('task-desc').value = '';
+      toast('✓ Tarea creada');
+      loadTasks();
+    } catch {
+      toast('Error de conexión', true);
+    }
+  }
+
+  async function deleteTask(id) {
+    try {
+      await fetch(`${API}/api/tasks/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      toast('✓ Tarea eliminada');
+      loadTasks();
+    } catch {
+      toast('Error al eliminar', true);
+    }
+  }
+
+  // ─── UTILS ───
+  function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+  }
+
+  function setError(id, msg) {
+    document.getElementById(id).textContent = msg;
+    setTimeout(() => document.getElementById(id).textContent = '', 3000);
+  }
+
+  function toast(msg, isError = false) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show' + (isError ? ' error' : '');
+    setTimeout(() => t.className = 'toast', 3000);
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // Enter key support
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      if (document.getElementById('login-form').style.display !== 'none' &&
+          document.getElementById('auth-screen').classList.contains('active')) doLogin();
+      if (document.getElementById('register-form').style.display !== 'none' &&
+          document.getElementById('auth-screen').classList.contains('active')) doRegister();
+    }
+  });
+</script>
+</body>
+</html>
