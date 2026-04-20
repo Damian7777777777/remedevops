@@ -5,14 +5,15 @@ const path = require('path');
 
 let token = '';
 
-// database.db está en la raíz del proyecto (dos niveles arriba de src/tests/)
 const db = new Database(path.join(__dirname, '../../database.db'));
 
 beforeAll(() => {
+  db.prepare("DELETE FROM tasks WHERE user_id = (SELECT id FROM users WHERE username = 'testuser')").run();
   db.prepare("DELETE FROM users WHERE username = 'testuser'").run();
 });
 
 afterAll(() => {
+  db.prepare("DELETE FROM tasks WHERE user_id = (SELECT id FROM users WHERE username = 'testuser')").run();
   db.prepare("DELETE FROM users WHERE username = 'testuser'").run();
   db.close();
 });
