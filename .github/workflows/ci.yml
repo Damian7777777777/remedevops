@@ -5,17 +5,28 @@ on:
     branches: [ "main" ]
 
 jobs:
-  test-blue:
+  debug-and-test:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
+      - name: Ver estructura del proyecto
+        run: |
+          echo " Root:"
+          ls -la
+          echo " proyecto-devops:"
+          ls -la proyecto-devops || echo "NO EXISTE"
+          echo "proyecto-devops-green:"
+          ls -la proyecto-devops-green || echo "NO EXISTE"
 
+      - name: Ver Node y npm
+        run: |
+          node -v
+          npm -v
+
+      # ===== BLUE =====
       - name: Install dependencies (blue)
         working-directory: ./proyecto-devops
         run: npm install
@@ -24,17 +35,7 @@ jobs:
         working-directory: ./proyecto-devops
         run: npm test
 
-  test-green:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
+      # ===== GREEN =====
       - name: Install dependencies (green)
         working-directory: ./proyecto-devops-green
         run: npm install
