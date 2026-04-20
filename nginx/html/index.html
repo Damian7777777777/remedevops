@@ -501,6 +501,35 @@
       50%      { opacity: 0.4; }
     }
 
+    /* VERSION BADGE */
+    .version-badge {
+      position: fixed;
+      bottom: 24px;
+      left: 24px;
+      font-family: 'Space Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      padding: 8px 16px;
+      border-radius: 2px;
+      z-index: 999;
+      transition: all 0.5s ease;
+      border: 1px solid;
+    }
+    .version-badge.blue {
+      background: rgba(0, 100, 255, 0.15);
+      color: #4da6ff;
+      border-color: #4da6ff;
+      box-shadow: 0 0 20px rgba(0,100,255,0.2);
+    }
+    .version-badge.green {
+      background: rgba(0, 255, 100, 0.15);
+      color: #7fffb2;
+      border-color: #7fffb2;
+      box-shadow: 0 0 20px rgba(0,255,100,0.2);
+    }
+
     /* TOAST */
     .toast {
       position: fixed;
@@ -625,6 +654,7 @@
 </div>
 
 <div class="toast" id="toast"></div>
+<div class="version-badge" id="version-badge" style="display:none"></div>
 
 <script>
   // ─── CONFIG ───
@@ -715,6 +745,7 @@
       const data = await res.json();
       const dot = document.getElementById('health-dot');
       const txt = document.getElementById('health-text');
+      const badge = document.getElementById('version-badge');
       if (data.status === 'ok') {
         dot.className = 'health-dot ok';
         txt.textContent = 'online';
@@ -722,6 +753,11 @@
         dot.className = 'health-dot fail';
         txt.textContent = 'degraded';
       }
+      // Mostrar badge de versión
+      const version = data.version || 'blue';
+      badge.style.display = 'block';
+      badge.className = `version-badge ${version}`;
+      badge.textContent = version === 'green' ? '🟢 GREEN' : '🔵 BLUE';
     } catch {
       document.getElementById('health-dot').className = 'health-dot fail';
       document.getElementById('health-text').textContent = 'offline';
