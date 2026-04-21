@@ -6,8 +6,7 @@ export const options = {
   duration: '30s',
 };
 
-const BASE_URL = 'http://localhost';
-
+const BASE_URL = 'http://localhost:3000';
 export default function () {
   // Test health
   const health = http.get(`${BASE_URL}/health`);
