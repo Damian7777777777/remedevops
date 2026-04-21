@@ -1,33 +1,26 @@
 name: DevOps Pipeline
-
 on:
   push:
     branches: ["main"]
-
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 18
-
       - name: Install native build tools
         run: sudo apt-get update -y && sudo apt-get install -y python3 make g++ build-essential
-
       - name: Reset databases
         run: |
           rm -f proyecto-devops/database.db
           rm -f proyecto-devops-green/database.db
-
       - name: Install & Test blue
         working-directory: ./proyecto-devops
         run: |
           npm ci --build-from-source
           npm test
-
       - name: Install & Test green
         working-directory: ./proyecto-devops-green
         run: |
@@ -39,16 +32,37 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-
-      - name: Deploy a GCP
+      - name: Blue-Green Deploy en GCP
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.GCP_HOST }}
           username: ${{ secrets.GCP_USER }}
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
-            cd ~/remedevops
+            cd ~/devops
             git pull origin main
-            docker compose down
-            docker compose up -d --build
-            echo " Deploy exitoso"
+
+            # Detectar cual esta activo
+            if docker inspect app-blue &>/dev/null && [ "$(docker inspect -f '{{.State.Running}}' app-blue)" = "true" ]; then
+              ACTIVE="blue"
+              NEXT="green"
+            else
+              ACTIVE="green"
+              NEXT="blue"
+            fi
+
+            echo "Activo: $ACTIVE -> Desplegando: $NEXT"
+
+            # Levantar el nuevo contenedor
+            docker compose up -d --build app-$NEXT
+            sleep 5
+
+            # Cambiar nginx al nuevo
+            sed -i "s/app-$ACTIVE/app-$NEXT/g" nginx/nginx.conf
+            docker exec nginx-proxy nginx -s reload
+
+            # Eliminar el contenedor antiguo
+            docker compose stop app-$ACTIVE
+            docker compose rm -f app-$ACTIVE
+
+            echo "Switch de $ACTIVE a $NEXT exitoso"
