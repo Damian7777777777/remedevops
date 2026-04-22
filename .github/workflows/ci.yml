@@ -116,19 +116,22 @@ jobs:
       - name: Detect active color from server
         id: color
         run: |
+          # Lee qué servidor está en el upstream active de nginx.conf
           ACTIVE=$(ssh -i /tmp/gcp_key -o StrictHostKeyChecking=no \
             ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} \
-            'if docker inspect app-blue &>/dev/null && [ "$(docker inspect -f "{{.State.Running}}" app-blue)" = "true" ]; then echo "blue"; else echo "green"; fi')
+            'grep -A1 "upstream active" ~/devops/nginx/nginx.conf | grep server | grep -o "app-[a-z]*" | head -1')
 
-          if [ "$ACTIVE" = "blue" ]; then
+          if [ "$ACTIVE" = "app-blue" ]; then
+            ACTIVE="blue"
             NEXT="green"
           else
+            ACTIVE="green"
             NEXT="blue"
           fi
 
           echo "active=$ACTIVE" >> $GITHUB_OUTPUT
           echo "next=$NEXT"     >> $GITHUB_OUTPUT
-          echo " Servidor reporta → ACTIVE=$ACTIVE | NEXT=$NEXT"
+          echo " nginx.conf reporta → ACTIVE=$ACTIVE | NEXT=$NEXT"
 
       - name: Cleanup SSH key
         if: always()
@@ -172,8 +175,8 @@ jobs:
             fi
             echo " app-$NEXT saludable (HTTP $HEALTH)"
 
-            # 3. Switch nginx → apuntar a NEXT
-            sed -i "s/app-$ACTIVE/app-$NEXT/g" nginx/nginx.conf
+            # 3. Switch nginx → cambiar upstream active en nginx.conf
+            sed -i "s/server app-$ACTIVE:3000/server app-$NEXT:3000/" nginx/nginx.conf
             docker exec nginx-proxy nginx -s reload
             echo " Nginx redirigido de app-$ACTIVE a app-$NEXT"
 
