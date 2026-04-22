@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   app-blue:
-    build: ./proyecto-devops
+    image: ghcr.io/damian7777777777/remedevops/app-blue:latest
     container_name: app-blue
     environment:
       - VERSION=blue
@@ -11,7 +11,7 @@ services:
       - "3001:3000"
 
   app-green:
-    build: ./proyecto-devops-green
+    image: ghcr.io/damian7777777777/remedevops/app-green:latest
     container_name: app-green
     environment:
       - VERSION=green
@@ -26,7 +26,7 @@ services:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
-      - ./nginx/html:/usr/share/nginx/html    # ← línea nueva
+      - ./nginx/html:/usr/share/nginx/html
     depends_on:
       - app-blue
       - app-green
