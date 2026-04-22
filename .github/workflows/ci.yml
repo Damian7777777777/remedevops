@@ -101,38 +101,16 @@ jobs:
           tags: ${{ env.IMAGE_BASE }}/app-green:latest
 
   # ─────────────────────────────────────────────
-  # El pipeline detecta cuál está activo y decide el switch
   determine-color:
     runs-on: ubuntu-latest
     needs: build-and-push
     outputs:
-      active: ${{ steps.detect.outputs.active }}
-      next: ${{ steps.detect.outputs.next }}
+      active: ${{ steps.color.outputs.active }}
+      next: ${{ steps.color.outputs.next }}
     steps:
-      - name: Detect active color via GCP SSH
-        id: detect
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.GCP_HOST }}
-          username: ${{ secrets.GCP_USER }}
-          key: ${{ secrets.GCP_SSH_KEY }}
-          script: |
-            if docker inspect app-blue &>/dev/null && \
-               [ "$(docker inspect -f '{{.State.Running}}' app-blue)" = "true" ]; then
-              echo "ACTIVE=blue" > /tmp/color_state
-              echo "NEXT=green"  >> /tmp/color_state
-            else
-              echo "ACTIVE=green" > /tmp/color_state
-              echo "NEXT=blue"   >> /tmp/color_state
-            fi
-            cat /tmp/color_state
-
-      - name: Read color state from server
-        id: detect
+      - name: Decide blue or green
+        id: color
         run: |
-          # El pipeline lee la decisión y la expone como output
-          # blue fue el último push → ahora toca green, y viceversa
-          # Usamos el número de run para alternar: par=blue, impar=green
           RUN_NUMBER=${{ github.run_number }}
           if (( RUN_NUMBER % 2 == 0 )); then
             echo "active=green" >> $GITHUB_OUTPUT
@@ -141,7 +119,7 @@ jobs:
             echo "active=blue"  >> $GITHUB_OUTPUT
             echo "next=green"   >> $GITHUB_OUTPUT
           fi
-          echo "Pipeline decide → NEXT: $(cat $GITHUB_OUTPUT | grep next)"
+          echo "Run #$RUN_NUMBER → NEXT: $(grep next $GITHUB_OUTPUT)"
 
   # ─────────────────────────────────────────────
   deploy:
@@ -153,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy NEXT container
+      - name: Blue-Green Deploy en GCP
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.GCP_HOST }}
@@ -170,7 +148,7 @@ jobs:
             docker compose up -d app-$NEXT
             sleep 5
 
-            # 2. Verificar que NEXT responde antes de switchear
+            # 2. Health check antes de switchear
             HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$([ "$NEXT" = "blue" ] && echo 3001 || echo 3002)/health)
             if [ "$HEALTH" != "200" ]; then
               echo " app-$NEXT no responde (HTTP $HEALTH) — abortando switch"
@@ -185,7 +163,7 @@ jobs:
             docker exec nginx-proxy nginx -s reload
             echo " Nginx redirigido de app-$ACTIVE a app-$NEXT"
 
-            # 4. Bajar contenedor ACTIVE
+            # 4. Borrar contenedor ACTIVE
             docker compose stop app-$ACTIVE
             docker compose rm -f app-$ACTIVE
             echo "  app-$ACTIVE eliminado"
