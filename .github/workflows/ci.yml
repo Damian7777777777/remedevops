@@ -116,10 +116,11 @@ jobs:
       - name: Detect active color from server
         id: color
         run: |
-          # Lee qué servidor está en el upstream active de nginx.conf
+          #  FIX: usa awk para leer SOLO el server dentro del bloque "upstream active"
+          # evita falsos positivos en los bloques "upstream blue" y "upstream green"
           ACTIVE=$(ssh -i /tmp/gcp_key -o StrictHostKeyChecking=no \
             ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} \
-            'grep -A1 "upstream active" ~/devops/nginx/nginx.conf | grep server | grep -o "app-[a-z]*" | head -1')
+            'awk "/upstream active/{found=1} found && /server/{match(\$0,/app-[a-z]+/); print substr(\$0,RSTART,RLENGTH); found=0}" ~/devops/nginx/nginx.conf')
 
           if [ "$ACTIVE" = "app-blue" ]; then
             ACTIVE="blue"
@@ -156,7 +157,15 @@ jobs:
           envs: ACTIVE,NEXT
           script: |
             cd ~/devops
-            git pull origin main
+
+            #  FIX: NO hacer git pull aquí para que nginx.conf no sea sobreescrito
+            # con el estado del repo (que quedaría siempre en el color inicial).
+            # Solo actualizamos el código de la app, excluyendo nginx.conf:
+            git fetch origin main
+            git checkout origin/main -- docker-compose.yml
+            # Si tienes otros archivos que sí quieres actualizar, agrégalos arriba.
+            # nginx/nginx.conf se mantiene SOLO en el servidor para preservar el estado del switch.
+
             echo "Pipeline decidió → Activo: $ACTIVE | Desplegando: $NEXT"
 
             # 1. Bajar imagen nueva y levantar contenedor NEXT
@@ -175,8 +184,18 @@ jobs:
             fi
             echo " app-$NEXT saludable (HTTP $HEALTH)"
 
-            # 3. Switch nginx → cambiar upstream active en nginx.conf
-            sed -i "s/server app-$ACTIVE:3000/server app-$NEXT:3000/" nginx/nginx.conf
+            # 3.  FIX: Switch nginx con sed SCOPED al bloque "upstream active"
+            # Esto evita tocar los bloques "upstream blue" o "upstream green"
+            sed -i "/upstream active/,/}/{s/server app-$ACTIVE:3000/server app-$NEXT:3000/}" nginx/nginx.conf
+
+            # Validar config antes de recargar (evita romper nginx silenciosamente)
+            docker exec nginx-proxy nginx -t
+            if [ $? -ne 0 ]; then
+              echo " nginx.conf inválido — revirtiendo cambio"
+              sed -i "/upstream active/,/}/{s/server app-$NEXT:3000/server app-$ACTIVE:3000/}" nginx/nginx.conf
+              exit 1
+            fi
+
             docker exec nginx-proxy nginx -s reload
             echo " Nginx redirigido de app-$ACTIVE a app-$NEXT"
 
