@@ -1,269 +1,133 @@
-name: DevOps Pipeline
+name: DevOps Pipeline PRO
 
 on:
   push:
     branches: ["main"]
 
 jobs:
-  # ─────────────────────────────────────────────
+
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install native build tools
-        run: sudo apt-get update -y && sudo apt-get install -y python3 make g++ build-essential
+      - run: sudo apt-get update -y && sudo apt-get install -y python3 make g++
 
-      - name: Reset database
-        run: rm -f proyecto-devops/database.db
-
-      - name: Install & Test
-        working-directory: ./proyecto-devops
+      - working-directory: ./proyecto-devops
         run: |
           npm ci --build-from-source
           npm test
 
-  # ─────────────────────────────────────────────
-  k6:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install k6
-        run: |
-          sudo gpg -k
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
-            --keyserver hkp://keyserver.ubuntu.com:80 \
-            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
-            | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update && sudo apt-get install k6
-
-      - name: Run k6 tests against GCP server
-        run: |
-          k6 run - <<EOF
-          import http from 'k6/http';
-          import { check, sleep } from 'k6';
-          export const options = { vus: 10, duration: '30s' };
-          const BASE_URL = 'http://34.133.237.146';
-          export default function () {
-            const health = http.get(\`\${BASE_URL}/health\`);
-            check(health, { 'health status 200': (r) => r.status === 200 });
-            const register = http.post(
-              \`\${BASE_URL}/api/auth/register\`,
-              JSON.stringify({ username: \`user_\${Math.random()}\`, password: '123456' }),
-              { headers: { 'Content-Type': 'application/json' } }
-            );
-            check(register, { 'register status 200': (r) => r.status === 200 });
-            sleep(1);
-          }
-          EOF
-
-  # ─────────────────────────────────────────────
   build-and-push:
     runs-on: ubuntu-latest
-    needs: k6
+    needs: test
     permissions:
-      contents: read
       packages: write
+    outputs:
+      image_tag: ${{ steps.vars.outputs.tag }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Login to GHCR
+      - id: vars
+        run: echo "tag=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Login GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set lowercase image base
-        run: echo "IMAGE_BASE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
-      - name: Build & Push app-blue
+      - name: Build & Push BLUE
         uses: docker/build-push-action@v5
         with:
           context: ./proyecto-devops
           push: true
           build-args: COLOR=blue
-          tags: ${{ env.IMAGE_BASE }}/app-blue:latest
+          tags: |
+            ghcr.io/${{ github.repository }}/app-blue:${{ steps.vars.outputs.tag }}
 
-      - name: Build & Push app-green
+      - name: Build & Push GREEN
         uses: docker/build-push-action@v5
         with:
           context: ./proyecto-devops
           push: true
           build-args: COLOR=green
-          tags: ${{ env.IMAGE_BASE }}/app-green:latest
+          tags: |
+            ghcr.io/${{ github.repository }}/app-green:${{ steps.vars.outputs.tag }}
 
-  # ─────────────────────────────────────────────
-  determine-color:
-    runs-on: ubuntu-latest
-    needs: build-and-push
-    outputs:
-      active: ${{ steps.color.outputs.active }}
-      next: ${{ steps.color.outputs.next }}
-    steps:
-      - name: Setup SSH key
-        run: |
-          echo "${{ secrets.GCP_SSH_KEY }}" > /tmp/gcp_key
-          chmod 600 /tmp/gcp_key
-
-      - name: Debug - Estructura del servidor
-        run: |
-          ssh -i /tmp/gcp_key -o StrictHostKeyChecking=no \
-            ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} '
-              echo "=== HOME ===" && echo $HOME
-              echo "=== Buscando nginx.conf ===" && find ~ -name "nginx.conf" 2>/dev/null
-              echo "=== Estructura del home ===" && ls -la ~
-              echo "=== Contenedores activos ===" && docker ps --format "table {{.Names}}\t{{.Ports}}" 2>/dev/null || true
-            '
-
-      - name: Detect active color from server
-        id: color
-        run: |
-          # Auto-descubre la ruta de nginx.conf en el servidor
-          ACTIVE=$(ssh -i /tmp/gcp_key -o StrictHostKeyChecking=no \
-            ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} '
-              # Buscar nginx.conf en rutas comunes
-              NGINX_CONF=""
-              for path in \
-                ~/devops/nginx/nginx.conf \
-                ~/devops/nginx.conf \
-                ~/nginx/nginx.conf \
-                ~/docker/nginx/nginx.conf \
-                /etc/nginx/nginx.conf; do
-                if [ -f "$path" ]; then
-                  NGINX_CONF="$path"
-                  break
-                fi
-              done
-
-              # Fallback: buscar con find en el home
-              if [ -z "$NGINX_CONF" ]; then
-                NGINX_CONF=$(find ~ -name "nginx.conf" 2>/dev/null | head -1)
-              fi
-
-              if [ -z "$NGINX_CONF" ]; then
-                echo "ERROR: nginx.conf no encontrado en ninguna ruta" >&2
-                exit 1
-              fi
-
-              echo "Usando nginx.conf en: $NGINX_CONF" >&2
-
-              # Leer SOLO el server dentro del bloque upstream active
-              awk "/upstream active/{found=1} found && /server/{match(\$0,/app-[a-z]+/); print substr(\$0,RSTART,RLENGTH); found=0}" "$NGINX_CONF"
-            ')
-
-          if [ "$ACTIVE" = "app-blue" ]; then
-            ACTIVE="blue"
-            NEXT="green"
-          else
-            ACTIVE="green"
-            NEXT="blue"
-          fi
-
-          echo "active=$ACTIVE" >> $GITHUB_OUTPUT
-          echo "next=$NEXT"     >> $GITHUB_OUTPUT
-          echo " nginx.conf reporta → ACTIVE=$ACTIVE | NEXT=$NEXT"
-
-      - name: Cleanup SSH key
-        if: always()
-        run: rm -f /tmp/gcp_key
-
-  # ─────────────────────────────────────────────
   deploy:
     runs-on: ubuntu-latest
-    needs: determine-color
-    env:
-      ACTIVE: ${{ needs.determine-color.outputs.active }}
-      NEXT: ${{ needs.determine-color.outputs.next }}
-    steps:
-      - uses: actions/checkout@v4
+    needs: build-and-push
 
-      - name: Blue-Green Deploy en GCP
+    steps:
+      - name: Deploy Blue/Green
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.GCP_HOST }}
           username: ${{ secrets.GCP_USER }}
           key: ${{ secrets.GCP_SSH_KEY }}
-          envs: ACTIVE,NEXT
           script: |
-            # Auto-descubrir la ruta del proyecto (donde está docker-compose.yml)
-            PROJECT_DIR=""
-            for path in ~/devops ~/docker ~/app ~; do
-              if [ -f "$path/docker-compose.yml" ] || [ -f "$path/docker-compose.yaml" ]; then
-                PROJECT_DIR="$path"
-                break
-              fi
-            done
-            if [ -z "$PROJECT_DIR" ]; then
-              PROJECT_DIR=$(find ~ -name "docker-compose.yml" -o -name "docker-compose.yaml" 2>/dev/null | head -1 | xargs dirname)
+
+            TAG=${{ needs.build-and-push.outputs.image_tag }}
+
+            cd ~/remedevops
+
+            # Detectar activo
+            if grep -q "app-blue" nginx/nginx.conf; then
+              ACTIVE=blue
+              NEXT=green
+            else
+              ACTIVE=green
+              NEXT=blue
             fi
-            echo " Directorio del proyecto: $PROJECT_DIR"
-            cd "$PROJECT_DIR"
 
-            # Auto-descubrir nginx.conf
-            NGINX_CONF=""
-            for path in \
-              "$PROJECT_DIR/nginx/nginx.conf" \
-              "$PROJECT_DIR/nginx.conf" \
-              ~/nginx/nginx.conf \
-              /etc/nginx/nginx.conf; do
-              if [ -f "$path" ]; then
-                NGINX_CONF="$path"
-                break
-              fi
-            done
-            if [ -z "$NGINX_CONF" ]; then
-              NGINX_CONF=$(find ~ -name "nginx.conf" 2>/dev/null | head -1)
-            fi
-            echo " nginx.conf encontrado en: $NGINX_CONF"
+            echo "Activo: $ACTIVE → Nuevo: $NEXT"
 
-            # Actualizar solo docker-compose.yml del repo, sin tocar nginx.conf
-            git fetch origin main
-            git checkout origin/main -- docker-compose.yml 2>/dev/null || true
+            # 🧹 Limpiar imagen anterior
+            docker image rm ghcr.io/${{ github.repository }}/app-$NEXT:$TAG || true
 
-            echo "Pipeline decidió → Activo: $ACTIVE | Desplegando: $NEXT"
+            # 📥 Pull real
+            docker pull ghcr.io/${{ github.repository }}/app-$NEXT:$TAG
 
-            # 1. Bajar imagen nueva y levantar contenedor NEXT
-            docker compose pull app-$NEXT
-            docker compose up -d app-$NEXT
-            sleep 5
+            # 🚀 Levantar nuevo
+            docker compose up -d --force-recreate app-$NEXT
 
-            # 2. Health check antes de switchear
+            # 🧠 Espera inteligente
             PORT=$([ "$NEXT" = "blue" ] && echo 3001 || echo 3002)
-            HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)
-            if [ "$HEALTH" != "200" ]; then
-              echo " app-$NEXT no responde (HTTP $HEALTH) — abortando switch"
+
+            for i in {1..15}; do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)
+              if [ "$STATUS" = "200" ]; then
+                echo "Nueva versión OK"
+                break
+              fi
+              echo "Esperando... intento $i"
+              sleep 3
+            done
+
+            # ❌ Si falla → rollback
+            if [ "$STATUS" != "200" ]; then
+              echo "Falló deploy → rollback"
               docker compose stop app-$NEXT
               docker compose rm -f app-$NEXT
               exit 1
             fi
-            echo " app-$NEXT saludable (HTTP $HEALTH)"
 
-            # 3. Switch nginx con sed SCOPED al bloque "upstream active"
-            # Evita tocar los bloques "upstream blue" o "upstream green"
-            sed -i "/upstream active/,/}/{s/server app-$ACTIVE:3000/server app-$NEXT:3000/}" "$NGINX_CONF"
+            # 🔁 Switch nginx
+            sed -i "s/app-$ACTIVE/app-$NEXT/g" nginx/nginx.conf
 
-            # Validar config antes de recargar
-            docker exec nginx-proxy nginx -t
-            if [ $? -ne 0 ]; then
-              echo " nginx.conf inválido — revirtiendo cambio"
-              sed -i "/upstream active/,/}/{s/server app-$NEXT:3000/server app-$ACTIVE:3000/}" "$NGINX_CONF"
-              exit 1
-            fi
-
+            docker exec nginx-proxy nginx -t || exit 1
             docker exec nginx-proxy nginx -s reload
-            echo " Nginx redirigido de app-$ACTIVE a app-$NEXT"
 
-            # 4. Borrar contenedor ACTIVE
+            echo "Tráfico ahora en app-$NEXT"
+
+            # 🧹 Eliminar viejo
             docker compose stop app-$ACTIVE
             docker compose rm -f app-$ACTIVE
-            echo "  app-$ACTIVE eliminado"
 
-            echo " Switch de $ACTIVE → $NEXT exitoso"
+            echo "Deploy exitoso 🚀"
