@@ -1,4 +1,4 @@
-name: DevOps Pipeline PRO
+name: DevOps Pipeline FINAL
 
 on:
   push:
@@ -6,6 +6,9 @@ on:
 
 jobs:
 
+# ─────────────────────────────
+# 1. TEST
+# ─────────────────────────────
   test:
     runs-on: ubuntu-latest
     steps:
@@ -16,24 +19,68 @@ jobs:
 
       - run: sudo apt-get update -y && sudo apt-get install -y python3 make g++
 
+      - run: rm -f proyecto-devops/database.db
+
       - working-directory: ./proyecto-devops
         run: |
           npm ci --build-from-source
           npm test
 
-  build-and-push:
+# ─────────────────────────────
+# 2. K6
+# ─────────────────────────────
+  k6:
     runs-on: ubuntu-latest
     needs: test
-    permissions:
-      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar k6
+        run: |
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+          --keyserver hkp://keyserver.ubuntu.com:80 \
+          --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+          | sudo tee /etc/apt/sources.list.d/k6.list
+
+          sudo apt-get update && sudo apt-get install -y k6
+
+      - name: Run k6
+        run: |
+          k6 run - <<EOF
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+
+          export const options = { vus: 10, duration: '30s' };
+          const BASE_URL = 'http://${{ secrets.GCP_HOST }}';
+
+          export default function () {
+            const res = http.get(\`\${BASE_URL}/health\`);
+            check(res, { 'status 200': (r) => r.status === 200 });
+            sleep(1);
+          }
+          EOF
+
+# ─────────────────────────────
+# 3. BUILD & PUSH
+# ─────────────────────────────
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: k6
+
     outputs:
-      image_tag: ${{ steps.vars.outputs.tag }}
+      tag: ${{ steps.vars.outputs.tag }}
 
     steps:
       - uses: actions/checkout@v4
 
       - id: vars
         run: echo "tag=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+
+      # 🔥 FIX LOWERCASE (como ya tenías antes)
+      - name: Set lowercase image base
+        run: echo "IMAGE_BASE=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
       - name: Login GHCR
         uses: docker/login-action@v3
@@ -48,8 +95,7 @@ jobs:
           context: ./proyecto-devops
           push: true
           build-args: COLOR=blue
-          tags: |
-            ghcr.io/${{ github.repository }}/app-blue:${{ steps.vars.outputs.tag }}
+          tags: ${{ env.IMAGE_BASE }}/app-blue:${{ steps.vars.outputs.tag }}
 
       - name: Build & Push GREEN
         uses: docker/build-push-action@v5
@@ -57,15 +103,17 @@ jobs:
           context: ./proyecto-devops
           push: true
           build-args: COLOR=green
-          tags: |
-            ghcr.io/${{ github.repository }}/app-green:${{ steps.vars.outputs.tag }}
+          tags: ${{ env.IMAGE_BASE }}/app-green:${{ steps.vars.outputs.tag }}
 
+# ─────────────────────────────
+# 4. DEPLOY BLUE/GREEN
+# ─────────────────────────────
   deploy:
     runs-on: ubuntu-latest
     needs: build-and-push
 
     steps:
-      - name: Deploy Blue/Green
+      - name: Deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.GCP_HOST }}
@@ -73,7 +121,8 @@ jobs:
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
 
-            TAG=${{ needs.build-and-push.outputs.image_tag }}
+            TAG=${{ needs.build-and-push.outputs.tag }}
+            REPO=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')
 
             cd ~/remedevops
 
@@ -88,16 +137,13 @@ jobs:
 
             echo "Activo: $ACTIVE → Nuevo: $NEXT"
 
-            # 🧹 Limpiar imagen anterior
-            docker image rm ghcr.io/${{ github.repository }}/app-$NEXT:$TAG || true
+            # Pull imagen correcta (SHA)
+            docker pull $REPO/app-$NEXT:$TAG
 
-            # 📥 Pull real
-            docker pull ghcr.io/${{ github.repository }}/app-$NEXT:$TAG
+            # Levantar nueva versión
+            TAG=$TAG docker compose up -d --force-recreate app-$NEXT
 
-            # 🚀 Levantar nuevo
-            docker compose up -d --force-recreate app-$NEXT
-
-            # 🧠 Espera inteligente
+            # Health check con retry REAL
             PORT=$([ "$NEXT" = "blue" ] && echo 3001 || echo 3002)
 
             for i in {1..15}; do
@@ -106,11 +152,11 @@ jobs:
                 echo "Nueva versión OK"
                 break
               fi
-              echo "Esperando... intento $i"
+              echo "Esperando app ($i)..."
               sleep 3
             done
 
-            # ❌ Si falla → rollback
+            # Rollback automático
             if [ "$STATUS" != "200" ]; then
               echo "Falló deploy → rollback"
               docker compose stop app-$NEXT
@@ -118,15 +164,15 @@ jobs:
               exit 1
             fi
 
-            # 🔁 Switch nginx
-            sed -i "s/app-$ACTIVE/app-$NEXT/g" nginx/nginx.conf
+            # Switch nginx SOLO en upstream active
+            sed -i "/upstream active/,/}/{s/app-$ACTIVE/app-$NEXT/}" nginx/nginx.conf
 
             docker exec nginx-proxy nginx -t || exit 1
             docker exec nginx-proxy nginx -s reload
 
             echo "Tráfico ahora en app-$NEXT"
 
-            # 🧹 Eliminar viejo
+            # Eliminar viejo
             docker compose stop app-$ACTIVE
             docker compose rm -f app-$ACTIVE
 
