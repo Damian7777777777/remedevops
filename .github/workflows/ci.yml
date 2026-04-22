@@ -108,18 +108,31 @@ jobs:
       active: ${{ steps.color.outputs.active }}
       next: ${{ steps.color.outputs.next }}
     steps:
-      - name: Decide blue or green
+      - name: Setup SSH key
+        run: |
+          echo "${{ secrets.GCP_SSH_KEY }}" > /tmp/gcp_key
+          chmod 600 /tmp/gcp_key
+
+      - name: Detect active color from server
         id: color
         run: |
-          RUN_NUMBER=${{ github.run_number }}
-          if (( RUN_NUMBER % 2 == 0 )); then
-            echo "active=green" >> $GITHUB_OUTPUT
-            echo "next=blue"    >> $GITHUB_OUTPUT
+          ACTIVE=$(ssh -i /tmp/gcp_key -o StrictHostKeyChecking=no \
+            ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} \
+            'if docker inspect app-blue &>/dev/null && [ "$(docker inspect -f "{{.State.Running}}" app-blue)" = "true" ]; then echo "blue"; else echo "green"; fi')
+
+          if [ "$ACTIVE" = "blue" ]; then
+            NEXT="green"
           else
-            echo "active=blue"  >> $GITHUB_OUTPUT
-            echo "next=green"   >> $GITHUB_OUTPUT
+            NEXT="blue"
           fi
-          echo "Run #$RUN_NUMBER → NEXT: $(grep next $GITHUB_OUTPUT)"
+
+          echo "active=$ACTIVE" >> $GITHUB_OUTPUT
+          echo "next=$NEXT"     >> $GITHUB_OUTPUT
+          echo " Servidor reporta → ACTIVE=$ACTIVE | NEXT=$NEXT"
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f /tmp/gcp_key
 
   # ─────────────────────────────────────────────
   deploy:
@@ -149,7 +162,8 @@ jobs:
             sleep 5
 
             # 2. Health check antes de switchear
-            HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$([ "$NEXT" = "blue" ] && echo 3001 || echo 3002)/health)
+            PORT=$([ "$NEXT" = "blue" ] && echo 3001 || echo 3002)
+            HEALTH=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)
             if [ "$HEALTH" != "200" ]; then
               echo " app-$NEXT no responde (HTTP $HEALTH) — abortando switch"
               docker compose stop app-$NEXT
