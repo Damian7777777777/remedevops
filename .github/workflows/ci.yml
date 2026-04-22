@@ -4,10 +4,6 @@ on:
   push:
     branches: ["main"]
 
-env:
-  # github.repository ya viene en minúsculas automáticamente
-  IMAGE_BASE: ghcr.io/${{ github.repository }}
-
 jobs:
   # ─────────────────────────────────────────────
   test:
@@ -82,7 +78,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Mismo context, mismo Dockerfile — solo cambia el ARG COLOR y el tag
+      - name: Set lowercase image base
+        run: echo "IMAGE_BASE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Build & Push app-blue
         uses: docker/build-push-action@v5
         with:
@@ -127,7 +125,7 @@ jobs:
             fi
             echo "Activo: $ACTIVE -> Desplegando: $NEXT"
 
-            # Levantar el nuevo contenedor (pull imagen nueva del registry)
+            # Bajar imagen nueva del registry
             docker compose pull app-$NEXT
             docker compose up -d app-$NEXT
             sleep 5
