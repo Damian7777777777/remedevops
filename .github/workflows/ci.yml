@@ -113,14 +113,51 @@ jobs:
           echo "${{ secrets.GCP_SSH_KEY }}" > /tmp/gcp_key
           chmod 600 /tmp/gcp_key
 
+      - name: Debug - Estructura del servidor
+        run: |
+          ssh -i /tmp/gcp_key -o StrictHostKeyChecking=no \
+            ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} '
+              echo "=== HOME ===" && echo $HOME
+              echo "=== Buscando nginx.conf ===" && find ~ -name "nginx.conf" 2>/dev/null
+              echo "=== Estructura del home ===" && ls -la ~
+              echo "=== Contenedores activos ===" && docker ps --format "table {{.Names}}\t{{.Ports}}" 2>/dev/null || true
+            '
+
       - name: Detect active color from server
         id: color
         run: |
-          #  FIX: usa awk para leer SOLO el server dentro del bloque "upstream active"
-          # evita falsos positivos en los bloques "upstream blue" y "upstream green"
+          # Auto-descubre la ruta de nginx.conf en el servidor
           ACTIVE=$(ssh -i /tmp/gcp_key -o StrictHostKeyChecking=no \
-            ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} \
-            'awk "/upstream active/{found=1} found && /server/{match(\$0,/app-[a-z]+/); print substr(\$0,RSTART,RLENGTH); found=0}" ~/devops/nginx/nginx.conf')
+            ${{ secrets.GCP_USER }}@${{ secrets.GCP_HOST }} '
+              # Buscar nginx.conf en rutas comunes
+              NGINX_CONF=""
+              for path in \
+                ~/devops/nginx/nginx.conf \
+                ~/devops/nginx.conf \
+                ~/nginx/nginx.conf \
+                ~/docker/nginx/nginx.conf \
+                /etc/nginx/nginx.conf; do
+                if [ -f "$path" ]; then
+                  NGINX_CONF="$path"
+                  break
+                fi
+              done
+
+              # Fallback: buscar con find en el home
+              if [ -z "$NGINX_CONF" ]; then
+                NGINX_CONF=$(find ~ -name "nginx.conf" 2>/dev/null | head -1)
+              fi
+
+              if [ -z "$NGINX_CONF" ]; then
+                echo "ERROR: nginx.conf no encontrado en ninguna ruta" >&2
+                exit 1
+              fi
+
+              echo "Usando nginx.conf en: $NGINX_CONF" >&2
+
+              # Leer SOLO el server dentro del bloque upstream active
+              awk "/upstream active/{found=1} found && /server/{match(\$0,/app-[a-z]+/); print substr(\$0,RSTART,RLENGTH); found=0}" "$NGINX_CONF"
+            ')
 
           if [ "$ACTIVE" = "app-blue" ]; then
             ACTIVE="blue"
@@ -156,15 +193,40 @@ jobs:
           key: ${{ secrets.GCP_SSH_KEY }}
           envs: ACTIVE,NEXT
           script: |
-            cd ~/devops
+            # Auto-descubrir la ruta del proyecto (donde está docker-compose.yml)
+            PROJECT_DIR=""
+            for path in ~/devops ~/docker ~/app ~; do
+              if [ -f "$path/docker-compose.yml" ] || [ -f "$path/docker-compose.yaml" ]; then
+                PROJECT_DIR="$path"
+                break
+              fi
+            done
+            if [ -z "$PROJECT_DIR" ]; then
+              PROJECT_DIR=$(find ~ -name "docker-compose.yml" -o -name "docker-compose.yaml" 2>/dev/null | head -1 | xargs dirname)
+            fi
+            echo " Directorio del proyecto: $PROJECT_DIR"
+            cd "$PROJECT_DIR"
 
-            #  FIX: NO hacer git pull aquí para que nginx.conf no sea sobreescrito
-            # con el estado del repo (que quedaría siempre en el color inicial).
-            # Solo actualizamos el código de la app, excluyendo nginx.conf:
+            # Auto-descubrir nginx.conf
+            NGINX_CONF=""
+            for path in \
+              "$PROJECT_DIR/nginx/nginx.conf" \
+              "$PROJECT_DIR/nginx.conf" \
+              ~/nginx/nginx.conf \
+              /etc/nginx/nginx.conf; do
+              if [ -f "$path" ]; then
+                NGINX_CONF="$path"
+                break
+              fi
+            done
+            if [ -z "$NGINX_CONF" ]; then
+              NGINX_CONF=$(find ~ -name "nginx.conf" 2>/dev/null | head -1)
+            fi
+            echo " nginx.conf encontrado en: $NGINX_CONF"
+
+            # Actualizar solo docker-compose.yml del repo, sin tocar nginx.conf
             git fetch origin main
-            git checkout origin/main -- docker-compose.yml
-            # Si tienes otros archivos que sí quieres actualizar, agrégalos arriba.
-            # nginx/nginx.conf se mantiene SOLO en el servidor para preservar el estado del switch.
+            git checkout origin/main -- docker-compose.yml 2>/dev/null || true
 
             echo "Pipeline decidió → Activo: $ACTIVE | Desplegando: $NEXT"
 
@@ -184,15 +246,15 @@ jobs:
             fi
             echo " app-$NEXT saludable (HTTP $HEALTH)"
 
-            # 3.  FIX: Switch nginx con sed SCOPED al bloque "upstream active"
-            # Esto evita tocar los bloques "upstream blue" o "upstream green"
-            sed -i "/upstream active/,/}/{s/server app-$ACTIVE:3000/server app-$NEXT:3000/}" nginx/nginx.conf
+            # 3. Switch nginx con sed SCOPED al bloque "upstream active"
+            # Evita tocar los bloques "upstream blue" o "upstream green"
+            sed -i "/upstream active/,/}/{s/server app-$ACTIVE:3000/server app-$NEXT:3000/}" "$NGINX_CONF"
 
-            # Validar config antes de recargar (evita romper nginx silenciosamente)
+            # Validar config antes de recargar
             docker exec nginx-proxy nginx -t
             if [ $? -ne 0 ]; then
               echo " nginx.conf inválido — revirtiendo cambio"
-              sed -i "/upstream active/,/}/{s/server app-$NEXT:3000/server app-$ACTIVE:3000/}" nginx/nginx.conf
+              sed -i "/upstream active/,/}/{s/server app-$NEXT:3000/server app-$ACTIVE:3000/}" "$NGINX_CONF"
               exit 1
             fi
 
