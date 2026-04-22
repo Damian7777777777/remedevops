@@ -1,93 +1,111 @@
 name: DevOps Pipeline
+
 on:
   push:
     branches: ["main"]
 
+env:
+  # github.repository ya viene en minúsculas automáticamente
+  IMAGE_BASE: ghcr.io/${{ github.repository }}
+
 jobs:
+  # ─────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
+
       - name: Install native build tools
         run: sudo apt-get update -y && sudo apt-get install -y python3 make g++ build-essential
-      - name: Reset databases
-        run: |
-          rm -f proyecto-devops/database.db
-          rm -f proyecto-devops-green/database.db
-      - name: Install & Test blue
+
+      - name: Reset database
+        run: rm -f proyecto-devops/database.db
+
+      - name: Install & Test
         working-directory: ./proyecto-devops
         run: |
           npm ci --build-from-source
           npm test
-      - name: Install & Test green
-        working-directory: ./proyecto-devops-green
-        run: |
-          npm ci --build-from-source
-          npm test
 
+  # ─────────────────────────────────────────────
   k6:
     runs-on: ubuntu-latest
     needs: test
     steps:
       - uses: actions/checkout@v4
+
       - name: Install k6
         run: |
           sudo gpg -k
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update
-          sudo apt-get install k6
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+            | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update && sudo apt-get install k6
+
       - name: Run k6 tests against GCP server
         run: |
           k6 run - <<EOF
           import http from 'k6/http';
           import { check, sleep } from 'k6';
-          export const options = {
-            vus: 10,
-            duration: '30s',
-          };
+          export const options = { vus: 10, duration: '30s' };
           const BASE_URL = 'http://34.133.237.146';
           export default function () {
             const health = http.get(\`\${BASE_URL}/health\`);
-            check(health, {
-              'health status 200': (r) => r.status === 200,
-            });
+            check(health, { 'health status 200': (r) => r.status === 200 });
             const register = http.post(
               \`\${BASE_URL}/api/auth/register\`,
               JSON.stringify({ username: \`user_\${Math.random()}\`, password: '123456' }),
               { headers: { 'Content-Type': 'application/json' } }
             );
-            check(register, {
-              'register status 200': (r) => r.status === 200,
-            });
+            check(register, { 'register status 200': (r) => r.status === 200 });
             sleep(1);
           }
           EOF
 
+  # ─────────────────────────────────────────────
   build-and-push:
     runs-on: ubuntu-latest
     needs: k6
     steps:
       - uses: actions/checkout@v4
-      - name: Login to GHCR
-        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-      - name: Build and push blue
-        run: |
-          docker build -t ghcr.io/${{ github.repository }}/app-blue:latest ./proyecto-devops
-          docker push ghcr.io/${{ github.repository }}/app-blue:latest
-      - name: Build and push green
-        run: |
-          docker build -t ghcr.io/${{ github.repository }}/app-green:latest ./proyecto-devops-green
-          docker push ghcr.io/${{ github.repository }}/app-green:latest
 
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Mismo context, mismo Dockerfile — solo cambia el ARG COLOR y el tag
+      - name: Build & Push app-blue
+        uses: docker/build-push-action@v5
+        with:
+          context: ./proyecto-devops
+          push: true
+          build-args: COLOR=blue
+          tags: ${{ env.IMAGE_BASE }}/app-blue:latest
+
+      - name: Build & Push app-green
+        uses: docker/build-push-action@v5
+        with:
+          context: ./proyecto-devops
+          push: true
+          build-args: COLOR=green
+          tags: ${{ env.IMAGE_BASE }}/app-green:latest
+
+  # ─────────────────────────────────────────────
   deploy:
     runs-on: ubuntu-latest
     needs: build-and-push
     steps:
       - uses: actions/checkout@v4
+
       - name: Blue-Green Deploy en GCP
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -98,26 +116,27 @@ jobs:
             cd ~/devops
             git pull origin main
 
-            # Detectar cual esta activo
-            if docker inspect app-blue &>/dev/null && [ "$(docker inspect -f '{{.State.Running}}' app-blue)" = "true" ]; then
+            # Detectar cuál está activo
+            if docker inspect app-blue &>/dev/null && \
+               [ "$(docker inspect -f '{{.State.Running}}' app-blue)" = "true" ]; then
               ACTIVE="blue"
               NEXT="green"
             else
               ACTIVE="green"
               NEXT="blue"
             fi
-
             echo "Activo: $ACTIVE -> Desplegando: $NEXT"
 
-            # Levantar el nuevo contenedor
-            docker compose up -d --build app-$NEXT
+            # Levantar el nuevo contenedor (pull imagen nueva del registry)
+            docker compose pull app-$NEXT
+            docker compose up -d app-$NEXT
             sleep 5
 
             # Cambiar nginx al nuevo
             sed -i "s/app-$ACTIVE/app-$NEXT/g" nginx/nginx.conf
             docker exec nginx-proxy nginx -s reload
 
-            # Eliminar el contenedor antiguo
+            # Bajar el contenedor antiguo
             docker compose stop app-$ACTIVE
             docker compose rm -f app-$ACTIVE
 
