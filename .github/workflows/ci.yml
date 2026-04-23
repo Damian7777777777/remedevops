@@ -1,166 +1,49 @@
-name: DevOps Pipeline FINAL
-
-on:
-  push:
-    branches: ["main"]
-
-jobs:
-
-# ─────────────────────────────
-# 1. TEST
-# ─────────────────────────────
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install build tools
-        run: sudo apt-get update -y && sudo apt-get install -y python3 make g++ build-essential
-
-      - name: Reset database
-        run: rm -f proyecto-devops/database.db
-
-      - name: Install & Test
-        working-directory: ./proyecto-devops
-        run: |
-          npm ci --build-from-source
-          npm test
-
-# ─────────────────────────────
-# 2. K6
-# ─────────────────────────────
-  k6:
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Instalar k6
-        run: |
-          sudo apt-get update && sudo apt-get install -y ca-certificates gnupg
-          sudo mkdir -p /root/.gnupg
-          sudo chmod 700 /root/.gnupg
-          curl -s https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
-            | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update && sudo apt-get install -y k6
-
-      - name: Run k6 contra GCP
-        run: |
-          k6 run - <<'EOF'
-          import http from 'k6/http';
-          import { check, sleep } from 'k6';
-
-          export const options = { vus: 10, duration: '30s' };
-          const BASE_URL = 'http://${{ secrets.GCP_HOST }}';
-
-          export default function () {
-            const health = http.get(`${BASE_URL}/health`);
-            check(health, { 'health 200': (r) => r.status === 200 });
-
-            const register = http.post(
-              `${BASE_URL}/api/auth/register`,
-              JSON.stringify({ username: `user_${Math.random()}`, password: '123456' }),
-              { headers: { 'Content-Type': 'application/json' } }
-            );
-            check(register, { 'register 200': (r) => r.status === 200 });
-
-            sleep(1);
-          }
-          EOF
-
-# ─────────────────────────────
-# 3. BUILD & PUSH
-# ─────────────────────────────
-  build-and-push:
-    runs-on: ubuntu-latest
-    needs: k6
-
-    outputs:
-      tag: ${{ steps.vars.outputs.tag }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: vars
-        run: echo "tag=${GITHUB_SHA}" >> $GITHUB_OUTPUT
-
-      - name: Set lowercase image base
-        run: echo "IMAGE_BASE=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
-      - name: Login GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build & Push BLUE
-        uses: docker/build-push-action@v5
-        with:
-          context: ./proyecto-devops
-          push: true
-          build-args: COLOR=blue
-          tags: ${{ env.IMAGE_BASE }}/app-blue:${{ steps.vars.outputs.tag }}
-
-      - name: Build & Push GREEN
-        uses: docker/build-push-action@v5
-        with:
-          context: ./proyecto-devops
-          push: true
-          build-args: COLOR=green
-          tags: ${{ env.IMAGE_BASE }}/app-green:${{ steps.vars.outputs.tag }}
-
-# ─────────────────────────────
-# 4. DEPLOY BLUE/GREEN
-# ─────────────────────────────
-  deploy:
-    runs-on: ubuntu-latest
-    needs: build-and-push
-
-    steps:
-      - name: Blue-Green Deploy en GCP
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.GCP_HOST }}
-          username: ${{ secrets.GCP_USER }}
-          key: ${{ secrets.GCP_SSH_KEY }}
-          script: |
+script: |
             TAG=${{ needs.build-and-push.outputs.tag }}
             REPO=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')
 
             cd ~/remedevops
-
             git pull origin main
 
-            # Detectar activo
-            if grep -q "server app-blue" nginx/nginx.conf; then
-              ACTIVE=blue
+            # Detectar cual fue el ultimo deploy
+            if [ -f .current_color ]; then
+              LAST=$(cat .current_color)
+            else
+              LAST=blue
+            fi
+
+            # Alternar color
+            if [ "$LAST" = "blue" ]; then
               NEXT=green
             else
-              ACTIVE=green
               NEXT=blue
             fi
 
-            echo "Activo: $ACTIVE → Desplegando: $NEXT"
+            echo "Desplegando: $NEXT"
 
-            # Login GHCR en servidor
+            # Login GHCR
             echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             # Pull imagen nueva
             docker pull $REPO/app-$NEXT:$TAG
 
-            # Levantar nuevo contenedor
-            TAG=$TAG docker compose up -d --force-recreate app-$NEXT
+            # Bajar app-active viejo
+            docker stop app-active || true
+            docker rm app-active || true
 
-            # Health check con retry
-            PORT=$([ "$NEXT" = "blue" ] && echo 3001 || echo 3002)
+            # Levantar nuevo como app-active
+            docker run -d \
+              --name app-active \
+              --network remedevops_default \
+              -e VERSION=$NEXT \
+              -e PORT=3000 \
+              -p 3000:3000 \
+              $REPO/app-$NEXT:$TAG
+
+            # Health check
             STATUS=0
             for i in {1..15}; do
-              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/health)
               if [ "$STATUS" = "200" ]; then
                 echo "App $NEXT lista!"
                 break
@@ -171,21 +54,20 @@ jobs:
 
             # Rollback si falla
             if [ "$STATUS" != "200" ]; then
-              echo "Falló health check → rollback"
-              docker compose stop app-$NEXT
-              docker compose rm -f app-$NEXT
+              echo "Falló → rollback"
+              docker stop app-active || true
+              docker rm app-active || true
+              docker run -d \
+                --name app-active \
+                --network remedevops_default \
+                -e VERSION=$LAST \
+                -e PORT=3000 \
+                -p 3000:3000 \
+                $REPO/app-$LAST:latest
               exit 1
             fi
 
-            # Switch nginx
-            sed -i "s/server app-$ACTIVE:3000/server app-$NEXT:3000/" nginx/nginx.conf
-            docker exec nginx-proxy nginx -t || exit 1
-            docker exec nginx-proxy nginx -s reload
+            # Guardar color actual
+            echo $NEXT > .current_color
 
-            echo "Tráfico ahora en $NEXT"
-
-            # Eliminar viejo
-            docker compose stop app-$ACTIVE
-            docker compose rm -f app-$ACTIVE
-
-            echo "Deploy exitoso"
+            echo "Deploy exitoso - ahora en $NEXT"
