@@ -20,19 +20,11 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update -y && sudo apt-get install -y python3 make g++ build-essential
 
-      - name: Reset databases
-        run: |
-          rm -f proyecto-devops/database.db
-          rm -f proyecto-devops-green/database.db
+      - name: Reset database
+        run: rm -f proyecto-devops/database.db
 
-      - name: Install & Test blue
+      - name: Install & Test
         working-directory: ./proyecto-devops
-        run: |
-          npm ci --build-from-source
-          npm test
-
-      - name: Install & Test green
-        working-directory: ./proyecto-devops-green
         run: |
           npm ci --build-from-source
           npm test
@@ -111,13 +103,15 @@ jobs:
         with:
           context: ./proyecto-devops
           push: true
+          build-args: COLOR=blue
           tags: ${{ env.IMAGE_BASE }}/app-blue:${{ steps.vars.outputs.tag }}
 
       - name: Build & Push GREEN
         uses: docker/build-push-action@v5
         with:
-          context: ./proyecto-devops-green
+          context: ./proyecto-devops
           push: true
+          build-args: COLOR=green
           tags: ${{ env.IMAGE_BASE }}/app-green:${{ steps.vars.outputs.tag }}
 
 # ─────────────────────────────
@@ -159,7 +153,7 @@ jobs:
             # Pull imagen nueva
             docker pull $REPO/app-$NEXT:$TAG
 
-            # Actualizar tag en compose y levantar
+            # Levantar nuevo contenedor
             TAG=$TAG docker compose up -d --force-recreate app-$NEXT
 
             # Health check con retry
