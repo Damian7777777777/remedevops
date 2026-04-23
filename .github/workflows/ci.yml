@@ -49,8 +49,10 @@ jobs:
           sudo apt-get update && sudo apt-get install -y k6
 
       - name: Run k6 contra GCP
+        # k6 no expande variables de GitHub dentro del heredoc con 'EOF' entre comillas
+        # se usa un archivo temporal para poder inyectar el secret correctamente
         run: |
-          k6 run - <<'EOF'
+          cat > /tmp/k6-script.js << EOF
           import http from 'k6/http';
           import { check, sleep } from 'k6';
 
@@ -58,12 +60,12 @@ jobs:
           const BASE_URL = 'http://${{ secrets.GCP_HOST }}';
 
           export default function () {
-            const health = http.get(`${BASE_URL}/health`);
+            const health = http.get(\`\${BASE_URL}/health\`);
             check(health, { 'health 200': (r) => r.status === 200 });
 
             const register = http.post(
-              `${BASE_URL}/api/auth/register`,
-              JSON.stringify({ username: `user_${Math.random()}`, password: '123456' }),
+              \`\${BASE_URL}/api/auth/register\`,
+              JSON.stringify({ username: \`user_\${__VU}_\${__ITER}\`, password: '123456' }),
               { headers: { 'Content-Type': 'application/json' } }
             );
             check(register, { 'register 200': (r) => r.status === 200 });
@@ -71,6 +73,7 @@ jobs:
             sleep(1);
           }
           EOF
+          k6 run /tmp/k6-script.js
 
 # ─────────────────────────────
 # 3. BUILD & PUSH
@@ -78,7 +81,6 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     needs: k6
-
     outputs:
       tag: ${{ steps.vars.outputs.tag }}
 
@@ -104,7 +106,9 @@ jobs:
           context: ./proyecto-devops
           push: true
           build-args: COLOR=blue
-          tags: ${{ env.IMAGE_BASE }}/app-blue:${{ steps.vars.outputs.tag }}
+          tags: |
+            ${{ env.IMAGE_BASE }}/app-blue:${{ steps.vars.outputs.tag }}
+            ${{ env.IMAGE_BASE }}/app-blue:latest
 
       - name: Build & Push GREEN
         uses: docker/build-push-action@v5
@@ -112,7 +116,9 @@ jobs:
           context: ./proyecto-devops
           push: true
           build-args: COLOR=green
-          tags: ${{ env.IMAGE_BASE }}/app-green:${{ steps.vars.outputs.tag }}
+          tags: |
+            ${{ env.IMAGE_BASE }}/app-green:${{ steps.vars.outputs.tag }}
+            ${{ env.IMAGE_BASE }}/app-green:latest
 
 # ─────────────────────────────
 # 4. DEPLOY BLUE/GREEN
@@ -129,13 +135,12 @@ jobs:
           username: ${{ secrets.GCP_USER }}
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
-            TAG=${{ needs.build-and-push.outputs.tag }}
+            TAG="${{ needs.build-and-push.outputs.tag }}"
             REPO=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')
 
             cd ~/remedevops
-            git pull origin main
 
-            # Detectar cual fue el ultimo deploy
+            # Detectar color del ultimo deploy
             if [ -f .current_color ]; then
               LAST=$(cat .current_color)
             else
@@ -149,55 +154,64 @@ jobs:
               NEXT=blue
             fi
 
-            echo "Desplegando: $NEXT"
+            echo " Ultimo: $LAST | Desplegando: $NEXT"
 
             # Login GHCR
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             # Pull imagen nueva
             docker pull $REPO/app-$NEXT:$TAG
 
-            # Bajar app-active viejo
-            docker stop app-active || true
-            docker rm app-active || true
-
-            # Levantar nuevo como app-active en puerto 3005
+            # Levantar contenedor NEXT como app-next para health check
+            docker stop app-next || true
+            docker rm app-next || true
             docker run -d \
-              --name app-active \
+              --name app-next \
               --network remedevops_default \
               -e VERSION=$NEXT \
               -e PORT=3000 \
               -p 3005:3000 \
               $REPO/app-$NEXT:$TAG
 
-            # Health check por puerto 3005
+            # Health check en puerto 3005
             STATUS=0
             for i in {1..15}; do
               STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3005/health)
               if [ "$STATUS" = "200" ]; then
-                echo "App $NEXT lista!"
+                echo " app-$NEXT saludable"
                 break
               fi
-              echo "Esperando ($i)..."
+              echo " Esperando ($i/15)..."
               sleep 3
             done
 
-            # Rollback si falla
+            # Rollback si falla el health check
             if [ "$STATUS" != "200" ]; then
-              echo "Falló → rollback"
-              docker stop app-active || true
-              docker rm app-active || true
-              docker run -d \
-                --name app-active \
-                --network remedevops_default \
-                -e VERSION=$LAST \
-                -e PORT=3000 \
-                -p 3005:3000 \
-                $REPO/app-$LAST:latest
+              echo " app-$NEXT no responde — rollback a $LAST"
+              docker stop app-next || true
+              docker rm app-next || true
               exit 1
             fi
 
-            # Guardar color actual
-            echo $NEXT > .current_color
+            # Switch: renombrar app-next → app-active
+            docker stop app-active || true
+            docker rm app-active || true
+            docker rename app-next app-active
 
-            echo "Deploy exitoso - ahora en $NEXT"
+            # Nginx ya apunta a app-active, solo recargar por si acaso
+            docker exec nginx-proxy nginx -s reload || true
+
+            # Borrar contenedor del color anterior si quedó huérfano
+            docker stop app-$LAST || true
+            docker rm app-$LAST || true
+            docker stop app-blue || true
+            docker rm app-blue || true
+            docker stop app-green || true
+            docker rm app-green || true
+
+            # Limpiar imágenes viejas (conserva las usadas actualmente)
+            docker image prune -af --filter "until=24h" || true
+
+            # Guardar color actual
+            echo "$NEXT" > .current_color
+            echo " Deploy exitoso — activo: $NEXT"
