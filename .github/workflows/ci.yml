@@ -17,11 +17,22 @@ jobs:
         with:
           node-version: 20
 
-      - run: sudo apt-get update -y && sudo apt-get install -y python3 make g++
+      - name: Install build tools
+        run: sudo apt-get update -y && sudo apt-get install -y python3 make g++ build-essential
 
-      - run: rm -f proyecto-devops/database.db
+      - name: Reset databases
+        run: |
+          rm -f proyecto-devops/database.db
+          rm -f proyecto-devops-green/database.db
 
-      - working-directory: ./proyecto-devops
+      - name: Install & Test blue
+        working-directory: ./proyecto-devops
+        run: |
+          npm ci --build-from-source
+          npm test
+
+      - name: Install & Test green
+        working-directory: ./proyecto-devops-green
         run: |
           npm ci --build-from-source
           npm test
@@ -37,18 +48,17 @@ jobs:
 
       - name: Instalar k6
         run: |
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
-          --keyserver hkp://keyserver.ubuntu.com:80 \
-          --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-
+          sudo gpg --no-default-keyring \
+            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+            --keyserver hkp://keyserver.ubuntu.com:80 \
+            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
           echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
-          | sudo tee /etc/apt/sources.list.d/k6.list
-
+            | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
-      - name: Run k6
+      - name: Run k6 contra GCP
         run: |
-          k6 run - <<EOF
+          k6 run - <<'EOF'
           import http from 'k6/http';
           import { check, sleep } from 'k6';
 
@@ -56,8 +66,16 @@ jobs:
           const BASE_URL = 'http://${{ secrets.GCP_HOST }}';
 
           export default function () {
-            const res = http.get(\`\${BASE_URL}/health\`);
-            check(res, { 'status 200': (r) => r.status === 200 });
+            const health = http.get(`${BASE_URL}/health`);
+            check(health, { 'health 200': (r) => r.status === 200 });
+
+            const register = http.post(
+              `${BASE_URL}/api/auth/register`,
+              JSON.stringify({ username: `user_${Math.random()}`, password: '123456' }),
+              { headers: { 'Content-Type': 'application/json' } }
+            );
+            check(register, { 'register 200': (r) => r.status === 200 });
+
             sleep(1);
           }
           EOF
@@ -78,7 +96,6 @@ jobs:
       - id: vars
         run: echo "tag=${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
-      # 🔥 FIX LOWERCASE (como ya tenías antes)
       - name: Set lowercase image base
         run: echo "IMAGE_BASE=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
@@ -94,15 +111,13 @@ jobs:
         with:
           context: ./proyecto-devops
           push: true
-          build-args: COLOR=blue
           tags: ${{ env.IMAGE_BASE }}/app-blue:${{ steps.vars.outputs.tag }}
 
       - name: Build & Push GREEN
         uses: docker/build-push-action@v5
         with:
-          context: ./proyecto-devops
+          context: ./proyecto-devops-green
           push: true
-          build-args: COLOR=green
           tags: ${{ env.IMAGE_BASE }}/app-green:${{ steps.vars.outputs.tag }}
 
 # ─────────────────────────────
@@ -113,21 +128,22 @@ jobs:
     needs: build-and-push
 
     steps:
-      - name: Deploy
+      - name: Blue-Green Deploy en GCP
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.GCP_HOST }}
           username: ${{ secrets.GCP_USER }}
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
-
             TAG=${{ needs.build-and-push.outputs.tag }}
             REPO=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')
 
-            cd ~/remedevops
+            cd ~/devops
+
+            git pull origin main
 
             # Detectar activo
-            if grep -q "app-blue" nginx/nginx.conf; then
+            if grep -q "server app-blue" nginx/nginx.conf; then
               ACTIVE=blue
               NEXT=green
             else
@@ -135,45 +151,47 @@ jobs:
               NEXT=blue
             fi
 
-            echo "Activo: $ACTIVE → Nuevo: $NEXT"
+            echo "Activo: $ACTIVE → Desplegando: $NEXT"
 
-            # Pull imagen correcta (SHA)
+            # Login GHCR en servidor
+            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            # Pull imagen nueva
             docker pull $REPO/app-$NEXT:$TAG
 
-            # Levantar nueva versión
+            # Actualizar tag en compose y levantar
             TAG=$TAG docker compose up -d --force-recreate app-$NEXT
 
-            # Health check con retry REAL
+            # Health check con retry
             PORT=$([ "$NEXT" = "blue" ] && echo 3001 || echo 3002)
-
+            STATUS=0
             for i in {1..15}; do
               STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)
               if [ "$STATUS" = "200" ]; then
-                echo "Nueva versión OK"
+                echo "App $NEXT lista!"
                 break
               fi
-              echo "Esperando app ($i)..."
+              echo "Esperando ($i)..."
               sleep 3
             done
 
-            # Rollback automático
+            # Rollback si falla
             if [ "$STATUS" != "200" ]; then
-              echo "Falló deploy → rollback"
+              echo "Falló health check → rollback"
               docker compose stop app-$NEXT
               docker compose rm -f app-$NEXT
               exit 1
             fi
 
-            # Switch nginx SOLO en upstream active
-            sed -i "/upstream active/,/}/{s/app-$ACTIVE/app-$NEXT/}" nginx/nginx.conf
-
+            # Switch nginx
+            sed -i "s/server app-$ACTIVE:3000/server app-$NEXT:3000/" nginx/nginx.conf
             docker exec nginx-proxy nginx -t || exit 1
             docker exec nginx-proxy nginx -s reload
 
-            echo "Tráfico ahora en app-$NEXT"
+            echo "Tráfico ahora en $NEXT"
 
             # Eliminar viejo
             docker compose stop app-$ACTIVE
             docker compose rm -f app-$ACTIVE
 
-            echo "Deploy exitoso 🚀"
+            echo "Deploy exitoso"
