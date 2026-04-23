@@ -132,7 +132,7 @@ jobs:
             TAG=${{ needs.build-and-push.outputs.tag }}
             REPO=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')
 
-            cd ~/devops
+            cd ~/remedevops
 
             git pull origin main
 
