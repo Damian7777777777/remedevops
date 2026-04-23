@@ -19,6 +19,15 @@ services:
     ports:
       - "3002:3000"
 
+  app-active:
+    image: ghcr.io/damian7777777777/remedevops/app-blue:${TAG:-latest}
+    container_name: app-active
+    environment:
+      - VERSION=blue
+      - PORT=3000
+    ports:
+      - "3000:3000"
+
   nginx:
     image: nginx:alpine
     container_name: nginx-proxy
@@ -28,8 +37,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./nginx/html:/usr/share/nginx/html
     depends_on:
-      - app-blue
-      - app-green
+      - app-active
 
   prometheus:
     image: prom/prometheus
