@@ -23,7 +23,7 @@ jobs:
       - name: Instalar dependencias y correr pruebas
         working-directory: ./proyecto-devops
         run: |
-          npm ci --build-from-source
+          npm install --build-from-source
           npm test
 
   pruebas-carga:
@@ -145,26 +145,22 @@ jobs:
 
             docker pull $REPO/app-$NEXT:$TAG
 
-            # Limpiar contenedores anteriores
             docker stop app-next || true
             docker rm app-next || true
             docker stop app-active || true
             docker rm app-active || true
 
-            # Limpiar cualquier contenedor que ocupe el puerto 3005
             CONTAINER_3005=$(docker ps -q --filter "publish=3005")
             if [ -n "$CONTAINER_3005" ]; then
               docker stop $CONTAINER_3005
               docker rm $CONTAINER_3005
             fi
 
-            # Limpiar contenedores huerfanos de deploys anteriores
             docker stop app-blue || true
             docker rm app-blue || true
             docker stop app-green || true
             docker rm app-green || true
 
-            # Levantar nuevo contenedor
             docker run -d \
               --name app-next \
               --network remedevops_default \
@@ -173,7 +169,6 @@ jobs:
               -p 3005:3000 \
               $REPO/app-$NEXT:$TAG
 
-            # Health check
             STATUS=0
             for i in $(seq 1 15); do
               STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3005/health)
@@ -185,12 +180,10 @@ jobs:
               sleep 3
             done
 
-            # Rollback si falla el health check
             if [ "$STATUS" != "200" ]; then
               echo "app-$NEXT no responde - rollback"
               docker stop app-next || true
               docker rm app-next || true
-              # Levantar el color anterior como fallback
               docker run -d \
                 --name app-active \
                 --network remedevops_default \
@@ -202,13 +195,10 @@ jobs:
               exit 1
             fi
 
-            # Switch: renombrar app-next a app-active
             docker rename app-next app-active
 
-            # Recargar nginx
             docker exec nginx-proxy nginx -s reload
 
-            # Limpiar imagenes viejas
             docker image prune -af --filter "until=24h" || true
 
             echo "$NEXT" > .current_color
