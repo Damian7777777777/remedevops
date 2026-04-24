@@ -20,11 +20,11 @@ jobs:
       - name: Limpiar base de datos
         run: rm -f proyecto-devops/database.db
 
-      -  name: Instalar dependencias y correr pruebas
+      - name: Instalar dependencias y correr pruebas
         working-directory: ./proyecto-devops
         run: |
           npm install --build-from-source
-          npx --no-install jest --forceExit
+          ./node_modules/.bin/jest --forceExit
 
   pruebas-carga:
     runs-on: ubuntu-latest
