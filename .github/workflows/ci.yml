@@ -6,7 +6,7 @@ on:
 
 jobs:
 
-  test:
+  pruebas:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,21 +14,21 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install build tools
+      - name: Instalar herramientas de compilacion
         run: sudo apt-get update -y && sudo apt-get install -y python3 make g++ build-essential
 
-      - name: Reset database
+      - name: Limpiar base de datos
         run: rm -f proyecto-devops/database.db
 
-      - name: Install & Test
+      - name: Instalar dependencias y correr pruebas
         working-directory: ./proyecto-devops
         run: |
           npm ci --build-from-source
           npm test
 
-  k6:
+  pruebas-carga:
     runs-on: ubuntu-latest
-    needs: test
+    needs: pruebas
     steps:
       - uses: actions/checkout@v4
 
@@ -42,16 +42,19 @@ jobs:
             | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update && sudo apt-get install -y k6
 
-      - name: Run k6 contra GCP
+      - name: Correr pruebas de carga contra GCP
+        env:
+          GCP_HOST: ${{ secrets.GCP_HOST }}
         run: |
-          cat > /tmp/k6-script.js << K6EOF
+          cat > /tmp/k6-script.js << 'K6EOF'
           import http from 'k6/http';
           import { check, sleep } from 'k6';
 
           export const options = { vus: 10, duration: '30s' };
-          const BASE_URL = 'http://${{ secrets.GCP_HOST }}';
 
           export default function () {
+            const BASE_URL = `http://${__ENV.GCP_HOST}`;
+
             const health = http.get(`${BASE_URL}/health`);
             check(health, { 'health 200': (r) => r.status === 200 });
 
@@ -67,9 +70,9 @@ jobs:
           K6EOF
           k6 run /tmp/k6-script.js
 
-  build-and-push:
+  construir-y-publicar:
     runs-on: ubuntu-latest
-    needs: k6
+    needs: pruebas-carga
     outputs:
       tag: ${{ steps.vars.outputs.tag }}
     steps:
@@ -78,17 +81,17 @@ jobs:
       - id: vars
         run: echo "tag=${GITHUB_SHA}" >> $GITHUB_OUTPUT
 
-      - name: Set lowercase image base
+      - name: Definir nombre de imagen en minusculas
         run: echo "IMAGE_BASE=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
-      - name: Login GHCR
+      - name: Autenticarse en GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & Push BLUE
+      - name: Construir y publicar imagen BLUE
         uses: docker/build-push-action@v5
         with:
           context: ./proyecto-devops
@@ -98,7 +101,7 @@ jobs:
             ${{ env.IMAGE_BASE }}/app-blue:${{ steps.vars.outputs.tag }}
             ${{ env.IMAGE_BASE }}/app-blue:latest
 
-      - name: Build & Push GREEN
+      - name: Construir y publicar imagen GREEN
         uses: docker/build-push-action@v5
         with:
           context: ./proyecto-devops
@@ -108,18 +111,18 @@ jobs:
             ${{ env.IMAGE_BASE }}/app-green:${{ steps.vars.outputs.tag }}
             ${{ env.IMAGE_BASE }}/app-green:latest
 
-  deploy:
+  despliegue:
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: construir-y-publicar
     steps:
-      - name: Blue-Green Deploy en GCP
+      - name: Despliegue Blue-Green en GCP
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.GCP_HOST }}
           username: ${{ secrets.GCP_USER }}
           key: ${{ secrets.GCP_SSH_KEY }}
           script: |
-            TAG="${{ needs.build-and-push.outputs.tag }}"
+            TAG="${{ needs.construir-y-publicar.outputs.tag }}"
             REPO=$(echo ghcr.io/${{ github.repository }} | tr '[:upper:]' '[:lower:]')
 
             cd ~/remedevops
