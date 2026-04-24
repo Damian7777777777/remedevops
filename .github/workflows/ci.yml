@@ -24,7 +24,7 @@ jobs:
         working-directory: ./proyecto-devops
         run: |
           npm install --build-from-source
-          npx jest --forceExit
+          ./node_modules/.bin/jest --forceExit
 
   pruebas-carga:
     runs-on: ubuntu-latest
